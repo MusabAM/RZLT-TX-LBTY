@@ -1,0 +1,13 @@
+# Large raw datasets (>100MB)
+Datasets/*.geojson
+Datasets/GTFS_All/shapes.txt
+Datasets/GTFS_All/stop_times.txt
+Datasets/GTFS_All/trips.txt
+
+# Serialized models
+Models/*.pkl
+
+# Python / Jupyter caches
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
