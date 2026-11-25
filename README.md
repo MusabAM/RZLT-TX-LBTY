@@ -34,109 +34,91 @@ Auditing the national RZLT schema (`~260,463` parcels) revealed that statutory o
 
 ---
 
-## 2. Dataset Progression & Sampling Strategy
+## 2. Dataset Inventory & File Naming Conventions
 
-To handle the severe natural class imbalance (`259,875` Included vs. `588` Excluded, ~`442:1`) while preserving representation across all six symbology codes and filtering sliver geometries (`SITE_AREA < 0.005 ha`), three tiered datasets were constructed in **Irish Transverse Mercator (`EPSG:2157`)**:
+All spatial datasets follow the convention `RZLT_<Scope>_<SamplingRatio>_<EnrichmentLevel>.geojson` and are projected in **Irish Transverse Mercator (`EPSG:2157`)** with sliver geometries (`SITE_AREA < 0.005 ha`) removed:
 
-1. **`RZLT_Samples/RZLT_AllCodes_Balanced_1to1.geojson` (`~1,176` rows):** 1:1 balanced sample for rapid prototyping and unbiased baseline checks.
-2. **`RZLT_Samples/RZLT_AllCodes_Stratified_10to1.geojson` (`~6,468` rows raw / `6,303` cleaned):** Keeps 100% of Excluded parcels (`3, 4`) alongside a stratified 10:1 sample of Included/Liable parcels (`1, 2, 5, 6`).
-3. **`RZLT_Samples/RZLT_AllCodes_10to1_WithGTFS.geojson` (`6,303` rows — `5,766` Included vs. `537` Excluded):** Production feature-enriched GeoJSON integrating real National Transport Authority (NTA) GTFS transit metrics and polygon geometry features.
+| File Path                                               | Rows      | Role & Experiments Used In                                                                                                                                                                |
+| :------------------------------------------------------ | :-------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `National_RZLT.geojson`                                 | `260,463` | Raw national source layer; used for stratified sampling and computing true physical neighbor counts (`cKDTree`) across Ireland.                                                           |
+| `gtfs/stops.txt`                                        | —         | Official Irish NTA GTFS static stops feed; used to compute multi-modal Bus and Rail/DART/Luas distances.                                                                                  |
+| `RZLT_Samples/RZLT_AllCodes_Balanced_1to1.geojson`      | `~1,176`  | `1:1` balanced prototype sample across all six `ZONE_SYMBOLOGY` codes for fast baseline checks.                                                                                           |
+| `RZLT_Samples/RZLT_AllCodes_Stratified_10to1.geojson`   | `6,303`   | `10:1` stratified sample (`5,766` Included vs. `537` Excluded) preserving sub-type proportions.                                                                                           |
+| `RZLT_Samples/RZLT_AllCodes_10to1_WithGTFS.geojson`     | `6,303`   | Adds NTA GTFS transit metrics & shape features. Used to benchmark **County-Aware (`With LOCAL_AUTHORITY`)** vs. initial **Policy-Only (`Without LOCAL_AUTHORITY`)**.                      |
+| `RZLT_Samples/RZLT_AllCodes_10to1_FullFeatures.geojson` | `6,303`   | Replaces sampled neighbor counts with true national `500m` & `1000m` parcel density. Used for **Final Policy-Only CV, `StratifiedGroupKFold`, Hyperparameter Tuning, and Outlier Audit**. |
+| `Models/RZLT_PolicyOnly_FinalModel.joblib`              | —         | Serialized production artifact (`XGBClassifier`, `OneHotEncoder`, feature column list, and optimal probability threshold `0.2758`).                                                       |
 
 ---
 
 ## 3. Feature Engineering (`EPSG:2157`)
 
+### True National Neighbor Density (`cKDTree` on All 260,463 Parcels)
+
+Computing neighbor counts against the full national dataset eliminated sampling-rate distortion and revealed a **~19x to 22x physical density separation** between Excluded and Included/Liable land:
+
+| Density Metric                  | Mean    | Median (Overall) | Median (`Excluded`) | Median (`Included_Liable`) |
+| :------------------------------ | :------ | :--------------- | :------------------ | :------------------------- |
+| **`TRUE_PARCELS_WITHIN_500M`**  | 669.5   | 657.0            | **37.0**            | **717.0**                  |
+| **`TRUE_PARCELS_WITHIN_1000M`** | 2,059.1 | 1,948.0          | **96.0**            | **2,150.5**                |
+
 ### Multi-Modal NTA GTFS Transit Accessibility (`cKDTree`)
 
-Using the official Irish NTA GTFS `stops.txt` feed projected to `EPSG:2157`, Euclidean distances and catchment densities were computed across `6,303` cleaned parcels:
+- **`DIST_TO_BUS_M`:** Nearest NTA bus stop (`Mean: 267.6m`, `Median: 194.4m`).
+- **`DIST_TO_RAIL_LUAS_M`:** Nearest Irish Rail, DART, or Luas station (`Mean: 6,590.4m`, `Median: 2,531.3m`).
+- **`DIST_TO_ANY_TRANSIT_M`:** Minimum distance across all public transport modes (`Median: 194.2m`).
+- **`BUS_STOPS_WITHIN_500M`:** Bus stops inside a $500\text{m}$ walking catchment (`Median: 7.0` stops for Included vs. `4.0` stops for Excluded).
+- **Log Transforms:** `LOG_DIST_BUS`, `LOG_DIST_RAIL_LUAS`, `LOG_TRUE_PARCELS_500M`, and `LOG_SITE_AREA`.
 
-| Metric                                               | Mean      | Median (50%) | Min    | Max         |
-| :--------------------------------------------------- | :-------- | :----------- | :----- | :---------- |
-| **`DIST_TO_BUS_M`** (Nearest Bus Stop)               | 267.6 m   | 194.4 m      | 5.6 m  | 4,742.5 m   |
-| **`DIST_TO_RAIL_LUAS_M`** (Nearest Rail/DART/Luas)   | 6,590.4 m | 2,531.3 m    | 82.3 m | 105,920.3 m |
-| **`DIST_TO_ANY_TRANSIT_M`** (Nearest Mode)           | 262.9 m   | 194.2 m      | 5.6 m  | 4,566.7 m   |
-| **`BUS_STOPS_WITHIN_500M`** (500m Walking Catchment) | 7.0 stops | 6.0 stops    | 0      | 77          |
+### Polygon Geometry & Statutory Zoning
 
-- **Median Transit Density Contrast:** Included/Liable parcels sit near a median of **7.0 bus stops within 500m**, compared to **4.0 bus stops within 500m** for Excluded parcels.
-- Log-transformed distance features (`LOG_DIST_BUS`, `LOG_DIST_RAIL_LUAS`) stabilize right-skew across rural and urban-edge sites.
-
-### Geometry & Spatial Clustering Features
-
-- **`SHAPE_COMPACTNESS` (Polsby-Popper Index):** $\frac{4\pi \times \text{Area}}{\text{Perimeter}^2}$ — identifies narrow road verges, access strips, and irregular slivers frequently removed by local authorities.
-- **`PERIM_TO_AREA`:** Perimeter-to-area ratio capturing boundary irregularity.
-- **`PARCELS_WITHIN_500M`:** Neighboring RZLT parcel count within a $500\text{m}$ radius via `cKDTree.query_ball_point`.
-- **`SITE_AREA` & `LOG_SITE_AREA`:** Standardized parcel area in hectares.
-- **Categorical Predictors:** `ZONE_GZT` (zoning code) and `LOCAL_AUTHORITY` (evaluated both with and without county fixed effects).
+- **`SHAPE_COMPACTNESS` (Polsby-Popper Index):** $\frac{4\pi \times \text{Area}}{\text{Perimeter}^2}$ — identifies narrow road verges and irregular slivers routinely excluded by local authorities.
+- **`PERIM_TO_AREA`:** Boundary-to-area ratio capturing polygon irregularity.
+- **`ZONE_GZT`:** Statutory Generalised Zoning Type (`R2`, `RS`, `R3`, `M1`, `M2`, `M4`, etc.).
 
 ---
 
-## 4. Model Evaluation & Benchmarking (5-Fold Stratified CV)
+## 4. Model Evolution & Evaluation Benchmarks
 
-All models were trained using **XGBoost (`XGBClassifier`)** with leak-free inside-fold `OneHotEncoder`, dynamic `scale_pos_weight` ($\approx 0.093$ for the 10:1 split), and **PR-AUC (`average_precision_score`)** tracked separately for both the majority **Inclusion** class and minority **Exclusion** class.
+All models use `XGBClassifier` with leak-free inside-fold `OneHotEncoder` and dynamic `scale_pos_weight`.
 
-### Model A: Full Model (With `LOCAL_AUTHORITY` + GTFS + Geometry)
+| Model Experiment                                   | Input Dataset                              | Validation Strategy             | ROC-AUC    | PR-AUC Inclusion (`1`) | PR-AUC Exclusion (`0`) | Max Exclusion F1 (Cutoff) |
+| :------------------------------------------------- | :----------------------------------------- | :------------------------------ | :--------- | :--------------------- | :--------------------- | :------------------------ |
+| **1. County-Aware (`With LOCAL_AUTHORITY`)**       | `RZLT_AllCodes_10to1_WithGTFS.geojson`     | Stratified 5-Fold CV            | **0.9798** | **0.9977**             | **0.8676**             | `0.77` (`0.5000`)         |
+| **2. Policy-Only Baseline (`No LOCAL_AUTHORITY`)** | `RZLT_AllCodes_10to1_WithGTFS.geojson`     | Stratified 5-Fold CV            | **0.9545** | **0.9948**             | **0.7380**             | `0.7065` (`0.2763`)       |
+| **3. Policy-Only + True National Density**         | `RZLT_AllCodes_10to1_FullFeatures.geojson` | Stratified 5-Fold CV            | **0.9715** | **0.9967**             | **0.8143**             | `0.7787` (`0.2158`)       |
+| **4. Tuned Policy-Only (In-Sample Regions)**       | `RZLT_AllCodes_10to1_FullFeatures.geojson` | Stratified 5-Fold CV            | **0.9716** | **0.9968**             | **0.8063**             | `0.7779` (`0.2758`)       |
+| **5. Tuned Policy-Only (Unseen Counties)**         | `RZLT_AllCodes_10to1_FullFeatures.geojson` | `StratifiedGroupKFold` (5-Fold) | **0.9198** | **0.9866**             | **0.7037**             | `0.7035` (`0.1594`)       |
 
-| Fold     | ROC-AUC    | PR-AUC Inclusion (`1`) | PR-AUC Exclusion (`0`) |
-| :------- | :--------- | :--------------------- | :--------------------- |
-| Fold 1   | 0.9849     | 0.9986                 | 0.8669                 |
-| Fold 2   | 0.9802     | 0.9972                 | 0.8693                 |
-| Fold 3   | 0.9804     | 0.9981                 | 0.8792                 |
-| Fold 4   | 0.9684     | 0.9963                 | 0.8424                 |
-| Fold 5   | 0.9852     | 0.9986                 | 0.8804                 |
-| **Mean** | **0.9798** | **0.9977**             | **0.8676**             |
+### Tuned Production Hyperparameters (`RandomizedSearchCV`)
 
-**Out-of-Fold Classification Report (Default `0.50` Threshold):**
-
-| Class                       | Precision | Recall   | F1-Score | Support             |
-| :-------------------------- | :-------- | :------- | :------- | :------------------ |
-| **Excluded (`3, 4`)**       | 0.67      | 0.90     | 0.77     | 537                 |
-| **Included (`1, 2, 5, 6`)** | 0.99      | 0.96     | 0.97     | 5,766               |
-| **Macro Avg / Accuracy**    | **0.83**  | **0.93** | **0.87** | **6,303 (95% Acc)** |
+- `max_depth=4`, `n_estimators=300`, `learning_rate=0.05`, `subsample=0.95`, `colsample_bytree=1.0`, `min_child_weight=1`, `reg_alpha=0.0`, `reg_lambda=1.0`.
 
 ---
 
-### Model B: Policy-Only Model (Excluding `LOCAL_AUTHORITY`)
+## 5. Explainable AI (SHAP) & Statutory Outlier Insights
 
-To eliminate county-level administrative fixed effects (`CCLA`, `COLA`, `KELA`) and isolate universal statutory and physical criteria, `LOCAL_AUTHORITY` was removed and the decision threshold was tuned on out-of-fold probabilities (`Optimal Inclusion Threshold = 0.2763`):
-
-| Fold     | ROC-AUC    | PR-AUC Inclusion (`1`) | PR-AUC Exclusion (`0`) |
-| :------- | :--------- | :--------------------- | :--------------------- |
-| Fold 1   | 0.9558     | 0.9952                 | 0.7345                 |
-| Fold 2   | 0.9609     | 0.9960                 | 0.7095                 |
-| Fold 3   | 0.9553     | 0.9953                 | 0.7585                 |
-| Fold 4   | 0.9395     | 0.9914                 | 0.7392                 |
-| Fold 5   | 0.9611     | 0.9962                 | 0.7483                 |
-| **Mean** | **0.9545** | **0.9948**             | **0.7380**             |
-
-**Out-of-Fold Classification Report (Threshold-Tuned at `0.2763`):**
-
-| Class                       | Precision | Recall   | F1-Score | Support             |
-| :-------------------------- | :-------- | :------- | :------- | :------------------ |
-| **Excluded (`3, 4`)**       | 0.71      | 0.70     | 0.71     | 537                 |
-| **Included (`1, 2, 5, 6`)** | 0.97      | 0.97     | 0.97     | 5,766               |
-| **Macro Avg / Accuracy**    | **0.84**  | **0.84** | **0.84** | **6,303 (95% Acc)** |
+1. **Multi-Scale Urban Density (`TRUE_PARCELS_WITHIN_500M` & `1000M`):** The top two drivers in the Policy-Only model—dense urban/suburban residential clusters strongly drive Inclusion, while isolated fringe parcels push toward Exclusion[cite: 3].
+2. **Geometry & Sliver Filtering (`SHAPE_COMPACTNESS` & `PERIM_TO_AREA`):** Low-compactness strips and awkward road verges push strongly toward Exclusion[cite: 3].
+3. **Mixed-Use vs. Residential Zoning (`ZONE_GZT`):** Mixed-use zones (`M2`, `M1`, `M4`) push toward Exclusion (reflecting commercial premises exemptions), while residential zones (`R2`, `RS`, `R3`) push toward Inclusion[cite: 3].
+4. **Statutory Outlier Audit:** High-confidence false inclusions (`SDLA00113781`, `SDLA00037177`) are physically compact, high-density suburban `R2` plots whose removal reflects non-spatial legal exemptions (e.g., existing LPT-liable dwellings or utility infrastructure) rather than map geometry.
 
 ---
 
-## 5. Explainable AI (SHAP) Insights
-
-SHAP (`TreeExplainer`) beeswarm analyses across both models confirm four core statutory dynamics:
-
-1. **Spatial Clustering (`PARCELS_WITHIN_500M`):** The #1 predictor in both models—dense urban/suburban parcel clusters strongly drive Inclusion, while isolated parcels push toward Exclusion[cite: 1, 2].
-2. **County-Level Administrative Divergence:** When included, `LOCAL_AUTHORITY` reveals stark regional variance—Cork County (`CCLA`) and Cork City (`COLA`) strongly favor Inclusion, whereas Kildare (`KELA`), Offaly (`OYLA`), and Monaghan (`MOLA`) show significantly higher exclusion rates[cite: 1].
-3. **Parcel Geometry (`SHAPE_COMPACTNESS` & `PERIM_TO_AREA`):** Irregular, elongated polygons (low compactness / high perimeter-to-area ratio) push strongly toward Exclusion, reflecting routine removal of narrow road verges and unbuildable edge strips[cite: 1, 2].
-4. **Statutory Zoning (`ZONE_GZT`) & Transit Proximity:** Mixed-use zones (`M2`, `M1`, `M4`) push toward Exclusion (consistent with commercial premises exemptions), while residential zones (`R2`, `RS`, `R3`) and multi-modal transit proximity (`DIST_TO_RAIL_LUAS_M`, `DIST_TO_BUS_M`, `BUS_STOPS_WITHIN_500M`) reinforce Inclusion[cite: 1, 2].
-
----
-
-## 6. Repository Structure & Next Steps
+## 6. Recommended Notebook & Repository Structure
 
 ```text
+├── 01_RZLT_Data_Sampling_And_Symbology_Prep.ipynb       # National 260k filtering & 1:1 / 10:1 stratified GeoJSON creation
+├── 02_NTA_GTFS_And_National_Spatial_Features.ipynb      # GTFS transit distances, Polsby-Popper geometry & true 260k density
+├── 03_Model_Benchmarking_And_SHAP_Explainability.ipynb  # County-Aware vs. Policy-Only 5-Fold CV & SHAP beeswarm plots
+├── 04_Hyperparameter_Tuning_SpatialCV_And_ErrorAudit.ipynb # RandomizedSearchCV, StratifiedGroupKFold, joblib export & outliers
 ├── RZLT_Samples/
-│   ├── RZLT_AllCodes_Balanced_1to1.geojson       # 1:1 balanced prototype sample
-│   ├── RZLT_AllCodes_Stratified_10to1.geojson    # 10:1 stratified national sample
-│   └── RZLT_AllCodes_10to1_WithGTFS.geojson      # Final GTFS + geometry enriched dataset
+│   ├── RZLT_AllCodes_Balanced_1to1.geojson
+│   ├── RZLT_AllCodes_Stratified_10to1.geojson
+│   ├── RZLT_AllCodes_10to1_WithGTFS.geojson
+│   └── RZLT_AllCodes_10to1_FullFeatures.geojson
+├── Models/
+│   └── RZLT_PolicyOnly_FinalModel.joblib
 ├── gtfs/
-│   └── stops.txt                                 # Irish NTA GTFS static stops feed
+│   └── stops.txt
 └── README.md
 ```
