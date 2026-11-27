@@ -4,6 +4,86 @@ An end-to-end spatial machine learning and explainable AI (XAI) pipeline for pre
 
 ---
 
+## Interactive Streamlit Dashboard
+
+The repository includes `app.py`, an interactive Streamlit dashboard for exploring RZLT predictions, comparing model results with statutory outcomes, explaining individual predictions, and testing hypothetical parcel characteristics.
+
+### Dashboard Features
+
+- **Geospatial Parcel Map & Outliers:** Displays filtered parcels on a map and provides parcel details when hovering over a parcel. Red indicates a higher exclusion probability and green indicates a higher inclusion probability.
+- **Model vs. Statutory Comparison:** Shows the displayed parcel count, actual exclusions, predicted exclusions, and policy agreement rate.
+- **Filtered Parcel Table:** Lists key parcel attributes, statutory status, model probabilities, and whether each parcel is a model/statutory disagreement.
+- **Parcel SHAP Explanation:** Generates a local SHAP waterfall plot showing the features that increase or decrease inclusion probability for a selected parcel.
+- **What-If Policy Simulator:** Allows users to adjust zoning, geometry, density, and public transport attributes and immediately see the predicted outcome.
+
+### Requirements
+
+Run the dashboard with Python 3.9 or later. Install the required packages in the project environment:
+
+```powershell
+python -m pip install streamlit geopandas pandas numpy scipy shapely joblib pydeck shap matplotlib xgboost
+```
+
+The application expects the following files at the repository paths shown below:
+
+```text
+Models/RZLT_PolicyOnly_FinalModel.joblib
+Datasets/RZLT_Samples/RZLT_AllCodes_10to1_FullFeatures.geojson
+Datasets/RZLT-Dataset.geojson
+Datasets/GTFS_All/stops.txt
+```
+
+The model and 10:1 stratified feature dataset are sufficient to explore the sample mode. The full national mode additionally requires the national RZLT GeoJSON and GTFS stops file.
+
+### Start the Dashboard
+
+From the repository root, run:
+
+```powershell
+streamlit run app.py
+```
+
+Streamlit will open the dashboard in a browser automatically. If it does not, open the Local URL printed in the terminal, normally `http://localhost:8501`.
+
+To stop the dashboard, return to the terminal and press `Ctrl+C`.
+
+### How to Use It
+
+1. **Choose a dataset scope** in the sidebar:
+   - **10:1 Stratified Sample:** Displays the 6,303-parcel audit sample. A Local Authority filter can be applied for a smaller review area.
+   - **Full National Map:** Displays 100% of parcels in a selected Local Authority. The full national data is loaded once and filtered by county before feature enrichment and scoring.
+
+2. **Apply policy and spatial filters**:
+   - Select one or more `ZONE_GZT` zoning codes.
+   - Select one or more actual statutory statuses.
+   - Adjust the **Inclusion Probability Cutoff**. The default is the model's tuned inclusion threshold (`0.2758`).
+   - Enable **Show Statutory Outliers Only** to isolate parcels where the model prediction differs from the recorded statutory outcome.
+
+3. **Review the KPIs and map**:
+   - Hover over a parcel or point to view its parcel ID, authority, zoning, actual status, probability values, density, and accessibility features.
+   - Use the **Filtered Parcel & Statutory Outlier Table** to sort and inspect matching records.
+   - Full and sample views cap map rendering at 15,000 parcels for browser performance. They prioritize parcels with lower inclusion probabilities, but the complete filtered table remains available below the map.
+
+4. **Explain an individual parcel**:
+   - Open the **Parcel SHAP Explanation** tab.
+   - Select a parcel ID from the filtered records.
+   - Review the SHAP waterfall plot. Blue indicates features pushing the prediction lower toward exclusion; red indicates features pushing it higher toward inclusion.
+
+5. **Run a what-if scenario**:
+   - Open the **What-If Policy Simulator** tab.
+   - Change the zoning, site area, shape compactness, perimeter-to-area ratio, parcel density, bus distance, rail/Luas distance, or nearby bus stop count.
+   - Compare the simulated statutory prediction with both the sample inclusion probability and the calibrated national probability.
+
+### Probability Values
+
+- **Sample Inclusion Probability (`PRED_INCL_PROB`)** is the model probability produced from the training sample distribution.
+- **Calibrated National Probability (`NAT_CALIBRATED_PROB`)** adjusts that probability toward the estimated national inclusion prevalence.
+- **Dynamic predictions** are calculated using the cutoff selected in the sidebar. This cutoff controls the displayed predicted class but does not change the underlying model or probabilities.
+
+These outputs are decision-support estimates and should not replace formal statutory assessment or local authority determinations.
+
+---
+
 ## 1. Architectural Pivot: From External GZT Spatial Subtraction to `ZONE_SYMBOLOGY`
 
 ### Initial Approach (Deprecated: External GZT Overlay)
